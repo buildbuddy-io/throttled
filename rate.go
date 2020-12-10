@@ -14,7 +14,7 @@ const (
 
 // A RateLimiterCtx manages limiting the rate of actions by key.
 type RateLimiterCtx interface {
-	// RateLimit checks whether a particular key has exceeded a rate
+	// RateLimitCtx checks whether a particular key has exceeded a rate
 	// limit. It also returns a RateLimitResult to provide additional
 	// information about the state of the RateLimiter.
 	//
