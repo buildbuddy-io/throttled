@@ -60,7 +60,7 @@ func (t *HTTPRateLimiterCtx) RateLimit(h http.Handler) http.Handler {
 			k = t.VaryBy.Key(r)
 		}
 
-		limited, context, err := t.RateLimiter.RateLimitCtx(r.Context(), k, 1)
+		limited, context, err := t.RateLimiter.RateLimitCtx(r.Context(), k, 1, true)
 
 		if err != nil {
 			t.error(w, r, err)

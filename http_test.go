@@ -14,7 +14,7 @@ import (
 type stubLimiter struct {
 }
 
-func (sl *stubLimiter) RateLimitCtx(_ context.Context, key string, quantity int) (bool, throttled.RateLimitResult, error) {
+func (sl *stubLimiter) RateLimitCtx(_ context.Context, key string, quantity int, recordUsage bool) (bool, throttled.RateLimitResult, error) {
 	switch key {
 	case "limit":
 		result := throttled.RateLimitResult{

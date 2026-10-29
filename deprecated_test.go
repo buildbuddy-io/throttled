@@ -32,7 +32,7 @@ func TestDeprecatedUsage(t *testing.T) {
 	}{
 		{"/foo", 200, map[string]string{"X-Ratelimit-Limit": "2", "X-Ratelimit-Remaining": "1", "X-Ratelimit-Reset": "30"}},
 		{"/foo", 200, map[string]string{"X-Ratelimit-Limit": "2", "X-Ratelimit-Remaining": "0", "X-Ratelimit-Reset": "60"}},
-		{"/foo", 429, map[string]string{"X-Ratelimit-Limit": "2", "X-Ratelimit-Remaining": "0", "X-Ratelimit-Reset": "60", "Retry-After": "30"}},
+		{"/foo", 429, map[string]string{"X-Ratelimit-Limit": "2", "X-Ratelimit-Remaining": "0", "X-Ratelimit-Reset": "90", "Retry-After": "30"}},
 		{"/bar", 200, map[string]string{"X-Ratelimit-Limit": "2", "X-Ratelimit-Remaining": "1", "X-Ratelimit-Reset": "30"}},
 	}
 
