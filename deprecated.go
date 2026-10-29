@@ -2,6 +2,7 @@ package throttled
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 	"time"
 )
@@ -165,7 +166,7 @@ type RateLimiter interface {
 //
 // Deprecated: Use RateLimitCtx instead.
 func (g *GCRARateLimiterCtx) RateLimit(key string, quantity int) (bool, RateLimitResult, error) {
-	return g.RateLimitCtx(context.Background(), key, quantity)
+	return g.RateLimitCtx(context.Background(), key, quantity, true)
 }
 
 // WrapStoreWithContext can be used to use GCRAStore in a place where a GCRAStoreCtx is required.
@@ -176,6 +177,7 @@ func WrapStoreWithContext(store GCRAStore) GCRAStoreCtx {
 }
 
 // WrapRateLimiterWithContext can be used to use RateLimiter in a place where a RateLimiterCtx is required.
+// Read-only checks require the wrapped limiter to also implement RateLimiterCtx.
 func WrapRateLimiterWithContext(rateLimier RateLimiter) RateLimiterCtx {
 	return rateLimiterCtxAdapter{
 		rateLimiter: rateLimier,
@@ -204,6 +206,12 @@ type rateLimiterCtxAdapter struct {
 	rateLimiter RateLimiter
 }
 
-func (r rateLimiterCtxAdapter) RateLimitCtx(_ context.Context, key string, quantity int) (bool, RateLimitResult, error) {
+func (r rateLimiterCtxAdapter) RateLimitCtx(ctx context.Context, key string, quantity int, recordUsage bool) (bool, RateLimitResult, error) {
+	if limiter, ok := r.rateLimiter.(RateLimiterCtx); ok {
+		return limiter.RateLimitCtx(ctx, key, quantity, recordUsage)
+	}
+	if !recordUsage {
+		return false, RateLimitResult{}, fmt.Errorf("legacy rate limiter does not support read-only checks")
+	}
 	return r.rateLimiter.RateLimit(key, quantity)
 }

@@ -18,13 +18,14 @@ type RateLimiterCtx interface {
 	// limit. It also returns a RateLimitResult to provide additional
 	// information about the state of the RateLimiter.
 	//
-	// If the rate limit has not been exceeded, the underlying storage
-	// is updated by the supplied quantity. For example, a quantity of
+	// If recordUsage is true, the underlying storage is updated even when
+	// the rate limit is exceeded. Otherwise the call only checks the limit.
+	// For example, a quantity of
 	// 1 might be used to rate limit a single request while a greater
 	// quantity could rate limit based on the size of a file upload in
 	// megabytes. If quantity is 0, no update is performed allowing
 	// you to "peek" at the state of the RateLimiter for a given key.
-	RateLimitCtx(ctx context.Context, key string, quantity int) (bool, RateLimitResult, error)
+	RateLimitCtx(ctx context.Context, key string, quantity int, recordUsage bool) (bool, RateLimitResult, error)
 }
 
 // RateLimitResult represents the state of the RateLimiter for a
@@ -174,13 +175,17 @@ func (g *GCRARateLimiterCtx) SetMaxCASAttemptsLimit(limit int) {
 // limit. It also returns a RateLimitResult to provide additional
 // information about the state of the RateLimiter.
 //
-// If the rate limit has not been exceeded, the underlying storage is
-// updated by the supplied quantity. For example, a quantity of 1
+// If recordUsage is true, the underlying storage is updated even when the
+// rate limit is exceeded. Otherwise the call only checks the limit.
+// For example, a quantity of 1
 // might be used to rate limit a single request while a greater
 // quantity could rate limit based on the size of a file upload in
 // megabytes. If quantity is 0, no update is performed allowing you
 // to "peek" at the state of the RateLimiter for a given key.
-func (g *GCRARateLimiterCtx) RateLimitCtx(ctx context.Context, key string, quantity int) (bool, RateLimitResult, error) {
+func (g *GCRARateLimiterCtx) RateLimitCtx(ctx context.Context, key string, quantity int, recordUsage bool) (bool, RateLimitResult, error) {
+	if quantity == 0 {
+		recordUsage = false
+	}
 	var tat, newTat, now time.Time
 	var ttl time.Duration
 	rlc := RateLimitResult{Limit: g.limit, RetryAfter: -1}
@@ -220,10 +225,15 @@ func (g *GCRARateLimiterCtx) RateLimitCtx(ctx context.Context, key string, quant
 				ttl = tat.Sub(now)
 			}
 			limited = true
-			break
+			if !recordUsage {
+				break
+			}
 		}
 
 		ttl = newTat.Sub(now)
+		if !recordUsage {
+			break
+		}
 
 		if tatVal == -1 {
 			updated, err = g.store.SetIfNotExistsWithTTL(ctx, key, newTat.UnixNano(), ttl)
@@ -238,6 +248,7 @@ func (g *GCRARateLimiterCtx) RateLimitCtx(ctx context.Context, key string, quant
 			break
 		}
 
+		// The redis update lost a race. Try again.
 		i++
 		if i >= g.maxCASAttemptsLimit {
 			return false, rlc, fmt.Errorf(
@@ -245,6 +256,11 @@ func (g *GCRARateLimiterCtx) RateLimitCtx(ctx context.Context, key string, quant
 				key, i,
 			)
 		}
+		// We'll recheck quota in the next attempt. Even if it was blocked in this attempt,
+		// it might be allowed in the next attempt.
+		// Reset the `limited` and `RetryAfter` fields that point to a blocked request.
+		limited = false
+		rlc.RetryAfter = -1
 	}
 
 	next := g.delayVariationTolerance - ttl

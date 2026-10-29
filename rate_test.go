@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"github.com/throttled/throttled/v2"
 	"github.com/throttled/throttled/v2/store/memstore"
 )
@@ -87,31 +88,83 @@ func TestRateLimit(t *testing.T) {
 	for i, c := range cases {
 		st.clock = c.now
 
-		limited, context, err := rl.RateLimitCtx(context.Background(), "foo", c.volume)
+		limited, result, err := rl.RateLimitCtx(context.Background(), "foo", c.volume, false /* recordUsage */)
 		if err != nil {
 			t.Fatalf("%d: %#v", i, err)
+		}
+		// Only non-blocked requests should record usage.
+		if !limited {
+			if _, _, err := rl.RateLimitCtx(context.Background(), "foo", c.volume, true /* recordUsage */); err != nil {
+				t.Fatal(err)
+			}
 		}
 
 		if limited != c.limited {
 			t.Errorf("%d: expected Limited to be %t but got %t", i, c.limited, limited)
 		}
 
-		if have, want := context.Limit, limit; have != want {
+		if have, want := result.Limit, limit; have != want {
 			t.Errorf("%d: expected Limit to be %d but got %d", i, want, have)
 		}
 
-		if have, want := context.Remaining, c.remaining; have != want {
+		if have, want := result.Remaining, c.remaining; have != want {
 			t.Errorf("%d: expected Remaining to be %d but got %d", i, want, have)
 		}
 
-		if have, want := context.ResetAfter, c.reset; have != want {
+		if have, want := result.ResetAfter, c.reset; have != want {
 			t.Errorf("%d: expected ResetAfter to be %s but got %s", i, want, have)
 		}
 
-		if have, want := context.RetryAfter, c.retry; have != want {
+		if have, want := result.RetryAfter, c.retry; have != want {
 			t.Errorf("%d: expected RetryAfter to be %d but got %d", i, want, have)
 		}
 	}
+}
+
+func TestRateLimit_RecordUsage(t *testing.T) {
+	mst, err := memstore.NewCtx(0)
+	require.NoError(t, err)
+	st := testStore{store: mst, clock: time.Unix(1000000000, 0), failUpdates: true}
+	rl, err := throttled.NewGCRARateLimiterCtx(&st, throttled.RateQuota{MaxRate: throttled.PerSec(1), MaxBurst: 2})
+	require.NoError(t, err)
+	ctx := context.Background()
+
+	// Read-only checks must neither create state nor attempt any writes.
+	for i := 0; i < 3; i++ {
+		limited, _, err := rl.RateLimitCtx(ctx, "key", 3, false)
+		require.NoError(t, err)
+		require.False(t, limited)
+	}
+	value, _, err := mst.GetWithTime(ctx, "key")
+	require.NoError(t, err)
+	require.Equal(t, int64(-1), value)
+
+	// Record an oversized charge, then more usage while already over quota.
+	st.failUpdates = false
+	for _, quantity := range []int{6, 2} {
+		limited, _, err := rl.RateLimitCtx(ctx, "key", quantity, true)
+		require.NoError(t, err)
+		require.True(t, limited)
+	}
+	value, _, err = mst.GetWithTime(ctx, "key")
+	require.NoError(t, err)
+	require.Equal(t, st.clock.Add(8*time.Second).UnixNano(), value)
+
+	// Read-only checks leave existing state unchanged, including after refill.
+	st.failUpdates = true
+	st.clock = st.clock.Add(5 * time.Second)
+	limited, _, err := rl.RateLimitCtx(ctx, "key", 1, false)
+	require.NoError(t, err)
+	require.True(t, limited)
+	st.clock = st.clock.Add(time.Second)
+	for i := 0; i < 3; i++ {
+		limited, _, err = rl.RateLimitCtx(ctx, "key", 1, false)
+		require.NoError(t, err)
+		require.False(t, limited)
+	}
+	after, _, err := mst.GetWithTime(ctx, "key")
+	require.NoError(t, err)
+	require.Equal(t, value, after)
 }
 
 func TestRateLimitCustomPeriod(t *testing.T) {
@@ -129,7 +182,7 @@ func TestRateLimitCustomPeriod(t *testing.T) {
 	}
 
 	for i := 0; i < 27; i++ {
-		limited, _, err := rl.RateLimitCtx(context.Background(), "bar", 1)
+		limited, _, err := rl.RateLimitCtx(context.Background(), "bar", 1, true)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -156,7 +209,7 @@ func TestRateLimitUpdateFailures(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, _, err := rl.RateLimitCtx(context.Background(), "foo", 1); err == nil {
+	if _, _, err := rl.RateLimitCtx(context.Background(), "foo", 1, true); err == nil {
 		t.Error("Expected limiting to fail when store updates fail")
 	}
 }
@@ -197,7 +250,7 @@ func BenchmarkRateLimit(b *testing.B) {
 	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _, err = rl.RateLimitCtx(context.Background(), "foo", 1)
+		_, _, err = rl.RateLimitCtx(context.Background(), "foo", 1, true)
 	}
 	_ = err
 }
