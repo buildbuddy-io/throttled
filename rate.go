@@ -18,14 +18,15 @@ type RateLimiterCtx interface {
 	// limit. It also returns a RateLimitResult to provide additional
 	// information about the state of the RateLimiter.
 	//
-	// If recordUsage is true, the underlying storage is updated even when
-	// the rate limit is exceeded. Otherwise the call only checks the limit.
-	// For example, a quantity of
+	// If the rate limit has not been exceeded, the underlying storage
+	// is updated by the supplied quantity. If recordUsageOverages is true,
+	// the storage is updated even when the rate limit is exceeded. For
+	// example, a quantity of
 	// 1 might be used to rate limit a single request while a greater
 	// quantity could rate limit based on the size of a file upload in
 	// megabytes. If quantity is 0, no update is performed allowing
 	// you to "peek" at the state of the RateLimiter for a given key.
-	RateLimitCtx(ctx context.Context, key string, quantity int, recordUsage bool) (bool, RateLimitResult, error)
+	RateLimitCtx(ctx context.Context, key string, quantity int, recordUsageOverages bool) (bool, RateLimitResult, error)
 }
 
 // RateLimitResult represents the state of the RateLimiter for a
@@ -175,17 +176,15 @@ func (g *GCRARateLimiterCtx) SetMaxCASAttemptsLimit(limit int) {
 // limit. It also returns a RateLimitResult to provide additional
 // information about the state of the RateLimiter.
 //
-// If recordUsage is true, the underlying storage is updated even when the
-// rate limit is exceeded. Otherwise the call only checks the limit.
-// For example, a quantity of 1
+// If the rate limit has not been exceeded, the underlying storage is
+// updated by the supplied quantity. If recordUsageOverages is true, the
+// storage is updated even when the rate limit is exceeded. For example, a
+// quantity of 1
 // might be used to rate limit a single request while a greater
 // quantity could rate limit based on the size of a file upload in
 // megabytes. If quantity is 0, no update is performed allowing you
 // to "peek" at the state of the RateLimiter for a given key.
-func (g *GCRARateLimiterCtx) RateLimitCtx(ctx context.Context, key string, quantity int, recordUsage bool) (bool, RateLimitResult, error) {
-	if quantity == 0 {
-		recordUsage = false
-	}
+func (g *GCRARateLimiterCtx) RateLimitCtx(ctx context.Context, key string, quantity int, recordUsageOverages bool) (bool, RateLimitResult, error) {
 	var tat, newTat, now time.Time
 	var ttl time.Duration
 	rlc := RateLimitResult{Limit: g.limit, RetryAfter: -1}
@@ -225,13 +224,14 @@ func (g *GCRARateLimiterCtx) RateLimitCtx(ctx context.Context, key string, quant
 				ttl = tat.Sub(now)
 			}
 			limited = true
-			if !recordUsage {
+			if !recordUsageOverages {
 				break
 			}
 		}
 
 		ttl = newTat.Sub(now)
-		if !recordUsage {
+		// A quantity of 0 is a read-only peek.
+		if quantity == 0 {
 			break
 		}
 

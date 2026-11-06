@@ -88,15 +88,9 @@ func TestRateLimit(t *testing.T) {
 	for i, c := range cases {
 		st.clock = c.now
 
-		limited, result, err := rl.RateLimitCtx(context.Background(), "foo", c.volume, false /* recordUsage */)
+		limited, result, err := rl.RateLimitCtx(context.Background(), "foo", c.volume, false /* recordUsageOverages */)
 		if err != nil {
 			t.Fatalf("%d: %#v", i, err)
-		}
-		// Only non-blocked requests should record usage.
-		if !limited {
-			if _, _, err := rl.RateLimitCtx(context.Background(), "foo", c.volume, true /* recordUsage */); err != nil {
-				t.Fatal(err)
-			}
 		}
 
 		if limited != c.limited {
@@ -121,7 +115,7 @@ func TestRateLimit(t *testing.T) {
 	}
 }
 
-func TestRateLimit_RecordUsage(t *testing.T) {
+func TestRateLimit_RecordUsageOverages(t *testing.T) {
 	mst, err := memstore.NewCtx(0)
 	require.NoError(t, err)
 	st := testStore{store: mst, clock: time.Unix(1000000000, 0), failUpdates: true}
@@ -129,42 +123,44 @@ func TestRateLimit_RecordUsage(t *testing.T) {
 	require.NoError(t, err)
 	ctx := context.Background()
 
-	// Read-only checks must neither create state nor attempt any writes.
-	for i := 0; i < 3; i++ {
-		limited, _, err := rl.RateLimitCtx(ctx, "key", 3, false)
-		require.NoError(t, err)
-		require.False(t, limited)
-	}
-	value, _, err := mst.GetWithTime(ctx, "key")
+	// Peeks with a quantity of 0 must not attempt any writes.
+	limited, _, err := rl.RateLimitCtx(ctx, "key", 0, false /* recordUsageOverages */)
 	require.NoError(t, err)
-	require.Equal(t, int64(-1), value)
-
-	// Record an oversized charge, then more usage while already over quota.
+	require.False(t, limited)
 	st.failUpdates = false
+
+	// A blocked request does not consume quota, so later requests still fit.
+	limited, _, err = rl.RateLimitCtx(ctx, "allow-key", 6, false /* recordUsageOverages */)
+	require.NoError(t, err)
+	require.True(t, limited)
+	limited, _, err = rl.RateLimitCtx(ctx, "allow-key", 1, false /* recordUsageOverages */)
+	require.NoError(t, err)
+	require.False(t, limited)
+
+	// Overages are recorded, so later requests are blocked.
 	for _, quantity := range []int{6, 2} {
-		limited, _, err := rl.RateLimitCtx(ctx, "key", quantity, true)
+		limited, _, err := rl.RateLimitCtx(ctx, "key", quantity, true /* recordUsageOverages */)
 		require.NoError(t, err)
 		require.True(t, limited)
 	}
-	value, _, err = mst.GetWithTime(ctx, "key")
+	value, _, err := mst.GetWithTime(ctx, "key")
 	require.NoError(t, err)
 	require.Equal(t, st.clock.Add(8*time.Second).UnixNano(), value)
 
-	// Read-only checks leave existing state unchanged, including after refill.
-	st.failUpdates = true
-	st.clock = st.clock.Add(5 * time.Second)
-	limited, _, err := rl.RateLimitCtx(ctx, "key", 1, false)
-	require.NoError(t, err)
-	require.True(t, limited)
-	st.clock = st.clock.Add(time.Second)
-	for i := 0; i < 3; i++ {
-		limited, _, err = rl.RateLimitCtx(ctx, "key", 1, false)
+	// Blocked requests and peeks leave the recorded overage unchanged, until it drains.
+	st.clock = st.clock.Add(4 * time.Second)
+	for _, quantity := range []int{0, 1} {
+		limited, _, err = rl.RateLimitCtx(ctx, "key", quantity, false /* recordUsageOverages */)
 		require.NoError(t, err)
-		require.False(t, limited)
+		require.True(t, limited)
 	}
 	after, _, err := mst.GetWithTime(ctx, "key")
 	require.NoError(t, err)
 	require.Equal(t, value, after)
+	st.clock = st.clock.Add(2 * time.Second)
+	limited, _, err = rl.RateLimitCtx(ctx, "key", 1, false /* recordUsageOverages */)
+	require.NoError(t, err)
+	require.False(t, limited)
 }
 
 func TestRateLimitCustomPeriod(t *testing.T) {
@@ -182,7 +178,7 @@ func TestRateLimitCustomPeriod(t *testing.T) {
 	}
 
 	for i := 0; i < 27; i++ {
-		limited, _, err := rl.RateLimitCtx(context.Background(), "bar", 1, true)
+		limited, _, err := rl.RateLimitCtx(context.Background(), "bar", 1, false /* recordUsageOverages */)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -209,7 +205,7 @@ func TestRateLimitUpdateFailures(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if _, _, err := rl.RateLimitCtx(context.Background(), "foo", 1, true); err == nil {
+	if _, _, err := rl.RateLimitCtx(context.Background(), "foo", 1, false /* recordUsageOverages */); err == nil {
 		t.Error("Expected limiting to fail when store updates fail")
 	}
 }
@@ -250,7 +246,7 @@ func BenchmarkRateLimit(b *testing.B) {
 	}
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _, err = rl.RateLimitCtx(context.Background(), "foo", 1, true)
+		_, _, err = rl.RateLimitCtx(context.Background(), "foo", 1, false /* recordUsageOverages */)
 	}
 	_ = err
 }
