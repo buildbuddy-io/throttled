@@ -66,7 +66,7 @@ func ExampleGCRARateLimiterCtx() {
 	for i := 0; i < 20; i++ {
 		bucket := fmt.Sprintf("by-order:%v", i/10)
 
-		limited, result, err := rateLimiter.RateLimitCtx(context.Background(), bucket, 1)
+		limited, result, err := rateLimiter.RateLimitCtx(context.Background(), bucket, 1, false /* recordUsageOverages */)
 		if err != nil {
 			log.Fatal(err)
 		}
